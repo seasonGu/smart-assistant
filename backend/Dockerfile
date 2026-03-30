@@ -9,7 +9,7 @@ WORKDIR /app
 # 安装系统依赖（编译器 + OCR 等）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc g++ make pkg-config \
-    libgl1 libglib2.0-0 \
+    libgl1 libglib2.0-0 libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
 # 先升级 pip setuptools
