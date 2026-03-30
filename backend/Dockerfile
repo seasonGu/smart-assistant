@@ -6,8 +6,9 @@ RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/
 
 WORKDIR /app
 
-# 安装系统依赖（OCR 等需要）
+# 安装系统依赖（编译器 + OCR 等）
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ make \
     libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
