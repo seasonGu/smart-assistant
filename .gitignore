@@ -1,0 +1,27 @@
+# 环境变量（含密钥）
+backend/.env
+
+# Python
+backend/venv/
+__pycache__/
+*.pyc
+
+# Node
+frontend/node_modules/
+
+# 构建产物
+frontend/dist/
+
+# IDE / 编辑器
+.vscode/
+.idea/
+*.swp
+
+# Claude Code
+.claude/
+
+# 系统文件
+.DS_Store
+
+# 杂项
+backend/=1.24.0
