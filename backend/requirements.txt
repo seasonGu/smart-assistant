@@ -1,9 +1,9 @@
-fastapi>=0.135.0
-uvicorn[standard]>=0.42.0
-pydantic>=2.11.5
+fastapi>=0.115.0,<1.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.8.0
 python-multipart>=0.0.9
 
-qwen-agent[gui]>=0.0.7
+qwen-agent>=0.0.7
 dashscope>=1.14.0
 pandas>=2.0.0
 sqlalchemy>=2.0.0
@@ -11,20 +11,20 @@ mysql-connector-python>=8.3.0
 python-dotenv>=1.0.0
 
 # 文档助手 —— LlamaIndex 数据层
-llama-index-core>=0.14.0
+llama-index-core>=0.10.0
 llama-index-llms-dashscope>=0.1.0
 llama-index-embeddings-dashscope>=0.1.0
 llama-index-readers-file>=0.1.0
 
 # 文档助手 —— LangChain 编排层
-langchain>=1.0.0
-langchain-community>=0.4.0
-langchain-core>=1.0.0
+langchain>=0.2.0
+langchain-community>=0.2.0
+langchain-core>=0.2.0
 
 # 文档解析
 pypdf>=4.0.0
 python-docx>=1.1.0
-PyMuPDF>=1.27.0
+PyMuPDF>=1.24.0
 rapidocr-onnxruntime>=1.2.0
 Pillow>=10.0.0
 
