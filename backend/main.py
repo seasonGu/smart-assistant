@@ -3,7 +3,9 @@ import json
 import asyncio
 import shutil
 import time
+import logging
 from collections import defaultdict
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, UploadFile, File, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -11,8 +13,11 @@ from pydantic import BaseModel
 from typing import List, Optional
 import dashscope
 from qwen_agent.agents import Assistant
+from apscheduler.schedulers.background import BackgroundScheduler
 import docs_assistant as da
 import stock_assistant as sa
+
+logger = logging.getLogger(__name__)
 
 # ====== 管理员认证 ======
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
@@ -79,7 +84,44 @@ def consume_guest_query(ip: str):
 dashscope.api_key = os.getenv('DASHSCOPE_API_KEY', '')
 dashscope.timeout = 30
 
-app = FastAPI(title="个人智能助手 API")
+# ====== 定时任务 ======
+scheduler = BackgroundScheduler()
+
+
+def scheduled_fetch_today_price():
+    """定时拉取当天股票行情"""
+    logger.info("定时任务开始：拉取当天股票行情")
+    try:
+        result = sa.fetch_and_save_today_price()
+        if result['success']:
+            logger.info("定时任务完成：%s", result['message'])
+        else:
+            logger.warning("定时任务失败：%s", result['message'])
+    except Exception as e:
+        logger.error("定时任务异常：%s", str(e))
+
+
+# 每天下午 5 点执行
+scheduler.add_job(
+    scheduled_fetch_today_price,
+    'cron',
+    hour=17,
+    minute=0,
+    id='fetch_today_stock_price',
+    replace_existing=True,
+)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    scheduler.start()
+    logger.info("定时任务调度器已启动，每天 17:00 自动拉取股票行情")
+    yield
+    scheduler.shutdown()
+    logger.info("定时任务调度器已关闭")
+
+
+app = FastAPI(title="个人智能助手 API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
