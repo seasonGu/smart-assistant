@@ -16,11 +16,17 @@ _index_loaded = False
 DOCS_DIR = os.path.join(os.path.dirname(__file__), 'docs')
 STORAGE_DIR = os.path.join(os.path.dirname(__file__), 'docs_storage')
 
-# 索引版本标记：embedding 模型或分块策略变更时递增，旧索引会被自动重建
-# v1: TEXT_EMBEDDING_V2, 默认分块
-# v2: TEXT_EMBEDDING_V3 + SentenceSplitter(512/80) + gte-rerank
-INDEX_VERSION = "v2"
-VERSION_FILE = os.path.join(STORAGE_DIR, '.index_version')
+# ====== Milvus Lite 配置 ======
+# Milvus Lite 是 Milvus 官方的嵌入式版本，像 SQLite 一样一个本地文件即可运行
+# 未来迁移到 Milvus Standalone / Zilliz Cloud 时，只需把 MILVUS_URI 改成服务端点
+MILVUS_URI = os.getenv(
+    'MILVUS_URI',
+    os.path.join(STORAGE_DIR, 'milvus_lite.db'),
+)
+# Collection 名字里带版本后缀，换 embedding 模型或分块策略时换个名字即可重建
+# v2: TEXT_EMBEDDING_V3(1024d) + SentenceSplitter(512/80) + gte-rerank
+MILVUS_COLLECTION = os.getenv('MILVUS_COLLECTION', 'smart_assistant_docs_v2')
+MILVUS_DIM = 1024  # TEXT_EMBEDDING_V3 向量维度
 
 # ====== RapidOCR 单例（懒加载） ======
 _ocr_engine = None
@@ -175,36 +181,60 @@ def _setup_llamaindex():
     )
 
 
-def _build_index(force_rebuild: bool = False):
-    """构建或加载向量索引"""
-    from llama_index.core import (
-        VectorStoreIndex,
-        StorageContext,
-        load_index_from_storage,
+def _get_milvus_vector_store(overwrite: bool = False):
+    """构造 MilvusVectorStore（Milvus Lite 模式，本地文件存储）"""
+    from llama_index.vector_stores.milvus import MilvusVectorStore
+
+    return MilvusVectorStore(
+        uri=MILVUS_URI,
+        collection_name=MILVUS_COLLECTION,
+        dim=MILVUS_DIM,
+        overwrite=overwrite,
+        similarity_metric="COSINE",
+        # HNSW 索引：中小规模 RAG 的经典选择，召回率高、查询快
+        # M=16 控制图的度数、efConstruction=200 控制建图时的搜索宽度
+        index_config={
+            "index_type": "HNSW",
+            "metric_type": "COSINE",
+            "params": {"M": 16, "efConstruction": 200},
+        },
+        search_config={"ef": 64},
     )
 
-    # 检查索引版本，embedding/分块策略变更时强制重建
-    if not force_rebuild and os.path.exists(STORAGE_DIR):
-        existing_version = None
-        if os.path.exists(VERSION_FILE):
-            try:
-                with open(VERSION_FILE, 'r') as f:
-                    existing_version = f.read().strip()
-            except Exception:
-                pass
-        if existing_version != INDEX_VERSION:
-            print(f"[DocsAssistant] 索引版本不匹配 (磁盘={existing_version}, 当前={INDEX_VERSION})，将重建")
-            force_rebuild = True
 
-    # 尝试从磁盘加载
-    if not force_rebuild and os.path.exists(STORAGE_DIR):
+def _milvus_has_data() -> bool:
+    """检查 Milvus collection 是否已有数据（用于判断是否需要从头构建）"""
+    try:
+        from pymilvus import MilvusClient
+
+        client = MilvusClient(uri=MILVUS_URI)
+        if not client.has_collection(MILVUS_COLLECTION):
+            return False
+        stats = client.get_collection_stats(MILVUS_COLLECTION)
+        row_count = stats.get("row_count", 0) if isinstance(stats, dict) else 0
+        return row_count > 0
+    except Exception as e:
+        print(f"[DocsAssistant] 检查 Milvus collection 失败: {e}")
+        return False
+
+
+def _build_index(force_rebuild: bool = False):
+    """构建或加载向量索引（Milvus Lite 后端）"""
+    from llama_index.core import VectorStoreIndex, StorageContext
+
+    # 确保 STORAGE_DIR 存在（Milvus Lite 需要一个目录来放 .db 文件）
+    os.makedirs(STORAGE_DIR, exist_ok=True)
+
+    # 非强制重建 且 collection 已有数据 → 直接接管现有索引
+    if not force_rebuild and _milvus_has_data():
         try:
-            storage_context = StorageContext.from_defaults(persist_dir=STORAGE_DIR)
-            index = load_index_from_storage(storage_context)
-            print("[DocsAssistant] 从本地存储加载索引成功")
+            vector_store = _get_milvus_vector_store(overwrite=False)
+            index = VectorStoreIndex.from_vector_store(vector_store=vector_store)
+            print(f"[DocsAssistant] 从 Milvus 加载已有索引 (collection={MILVUS_COLLECTION})")
             return index
         except Exception as e:
-            print(f"[DocsAssistant] 加载索引失败: {e}，将重新构建")
+            print(f"[DocsAssistant] 加载 Milvus 索引失败: {e}，将重新构建")
+            force_rebuild = True
 
     # 从文档目录构建
     if not os.path.exists(DOCS_DIR):
@@ -223,12 +253,19 @@ def _build_index(force_rebuild: bool = False):
     if not documents:
         print("[DocsAssistant] 未能提取到任何文档内容")
         return None
-    index = VectorStoreIndex.from_documents(documents)
-    index.storage_context.persist(persist_dir=STORAGE_DIR)
-    # 写入版本标记，下次启动可校验
-    with open(VERSION_FILE, 'w') as f:
-        f.write(INDEX_VERSION)
-    print(f"[DocsAssistant] 索引已保存到 {STORAGE_DIR} (version={INDEX_VERSION})")
+
+    # force_rebuild=True 时 overwrite=True，会 drop 掉旧 collection 再重建
+    vector_store = _get_milvus_vector_store(overwrite=True)
+    storage_context = StorageContext.from_defaults(vector_store=vector_store)
+
+    index = VectorStoreIndex.from_documents(
+        documents,
+        storage_context=storage_context,
+    )
+    print(
+        f"[DocsAssistant] 索引已写入 Milvus "
+        f"(uri={MILVUS_URI}, collection={MILVUS_COLLECTION})"
+    )
     return index
 
 
@@ -411,12 +448,13 @@ def list_docs() -> List[dict]:
 
 
 def rebuild_index() -> str:
-    """强制重建索引（新增文档后调用）"""
+    """
+    强制重建索引（新增文档后调用）。
+    Milvus 模式下无需 rmtree 本地目录：_get_milvus_vector_store(overwrite=True)
+    会在底层 drop 掉旧 collection 再重建。
+    """
     global _index, _index_loaded
     _index_loaded = False
-    import shutil
-    if os.path.exists(STORAGE_DIR):
-        shutil.rmtree(STORAGE_DIR)
     _index = get_index(force_rebuild=True)
     if _index is None:
         return "docs 目录为空，无法构建索引"
