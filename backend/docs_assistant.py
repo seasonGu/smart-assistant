@@ -16,6 +16,12 @@ _index_loaded = False
 DOCS_DIR = os.path.join(os.path.dirname(__file__), 'docs')
 STORAGE_DIR = os.path.join(os.path.dirname(__file__), 'docs_storage')
 
+# 索引版本标记：embedding 模型或分块策略变更时递增，旧索引会被自动重建
+# v1: TEXT_EMBEDDING_V2, 默认分块
+# v2: TEXT_EMBEDDING_V3 + SentenceSplitter(512/80) + gte-rerank
+INDEX_VERSION = "v2"
+VERSION_FILE = os.path.join(STORAGE_DIR, '.index_version')
+
 # ====== RapidOCR 单例（懒加载） ======
 _ocr_engine = None
 
@@ -143,8 +149,9 @@ def _load_all_documents() -> List:
 
 
 def _setup_llamaindex():
-    """配置 LlamaIndex 全局 LLM 和 Embedding"""
+    """配置 LlamaIndex 全局 LLM、Embedding 和分块策略"""
     from llama_index.core import Settings
+    from llama_index.core.node_parser import SentenceSplitter
     from llama_index.llms.dashscope import DashScope
     from llama_index.embeddings.dashscope import (
         DashScopeEmbedding,
@@ -157,8 +164,14 @@ def _setup_llamaindex():
         temperature=0.1,
         top_p=0.8,
     )
+    # 使用 V3 embedding（中文长文本效果显著优于 V2）
     Settings.embed_model = DashScopeEmbedding(
-        model_name=DashScopeTextEmbeddingModels.TEXT_EMBEDDING_V2,
+        model_name=DashScopeTextEmbeddingModels.TEXT_EMBEDDING_V3,
+    )
+    # 显式控制分块：512 token 一块，相邻块 80 token 重叠，避免答案被切断
+    Settings.node_parser = SentenceSplitter(
+        chunk_size=512,
+        chunk_overlap=80,
     )
 
 
@@ -169,6 +182,19 @@ def _build_index(force_rebuild: bool = False):
         StorageContext,
         load_index_from_storage,
     )
+
+    # 检查索引版本，embedding/分块策略变更时强制重建
+    if not force_rebuild and os.path.exists(STORAGE_DIR):
+        existing_version = None
+        if os.path.exists(VERSION_FILE):
+            try:
+                with open(VERSION_FILE, 'r') as f:
+                    existing_version = f.read().strip()
+            except Exception:
+                pass
+        if existing_version != INDEX_VERSION:
+            print(f"[DocsAssistant] 索引版本不匹配 (磁盘={existing_version}, 当前={INDEX_VERSION})，将重建")
+            force_rebuild = True
 
     # 尝试从磁盘加载
     if not force_rebuild and os.path.exists(STORAGE_DIR):
@@ -199,7 +225,10 @@ def _build_index(force_rebuild: bool = False):
         return None
     index = VectorStoreIndex.from_documents(documents)
     index.storage_context.persist(persist_dir=STORAGE_DIR)
-    print(f"[DocsAssistant] 索引已保存到 {STORAGE_DIR}")
+    # 写入版本标记，下次启动可校验
+    with open(VERSION_FILE, 'w') as f:
+        f.write(INDEX_VERSION)
+    print(f"[DocsAssistant] 索引已保存到 {STORAGE_DIR} (version={INDEX_VERSION})")
     return index
 
 
@@ -213,25 +242,74 @@ def get_index(force_rebuild: bool = False):
     return _index
 
 
-def retrieve_docs(query: str, top_k: int = 5) -> List[dict]:
-    """用 LlamaIndex 检索相关文档片段，返回 [{"text": ..., "file": ..., "score": ...}]"""
-    from langchain_core.documents import Document as LCDocument
+def _rerank_with_dashscope(query: str, candidates: List[dict], top_n: int) -> List[dict]:
+    """
+    用 DashScope gte-rerank 对粗召回结果做精排。
+    失败时退化为按原始向量分数取前 top_n（不阻塞主流程）。
+    """
+    if not candidates:
+        return []
 
+    try:
+        import dashscope
+        from http import HTTPStatus
+
+        resp = dashscope.TextReRank.call(
+            model="gte-rerank",
+            query=query,
+            documents=[c["text"] for c in candidates],
+            top_n=top_n,
+            return_documents=False,
+            api_key=DASHSCOPE_API_KEY,
+        )
+
+        if resp.status_code != HTTPStatus.OK:
+            print(f"[Rerank] 调用失败 status={resp.status_code} msg={resp.message}，降级使用向量分数")
+            return candidates[:top_n]
+
+        results = []
+        for item in resp.output.results:
+            doc = dict(candidates[item.index])
+            doc["rerank_score"] = round(float(item.relevance_score), 4)
+            results.append(doc)
+        return results
+    except Exception as e:
+        print(f"[Rerank] 异常 {e}，降级使用向量分数")
+        return candidates[:top_n]
+
+
+def retrieve_docs(
+    query: str,
+    top_k: int = 5,
+    recall_k: int = 30,
+    use_rerank: bool = True,
+) -> List[dict]:
+    """
+    两阶段检索：
+      1) 向量召回 recall_k 条候选（bi-encoder，快但粗）
+      2) gte-rerank 精排取 top_k 条（cross-encoder，慢但准）
+    返回 [{"text", "file", "score", "rerank_score"?}, ...]
+    """
     index = get_index()
     if index is None:
         return []
 
-    retriever = index.as_retriever(similarity_top_k=top_k)
+    # 阶段 1：向量粗召回
+    retriever = index.as_retriever(similarity_top_k=recall_k if use_rerank else top_k)
     nodes = retriever.retrieve(query)
 
-    results = []
+    candidates = []
     for node in nodes:
-        results.append({
+        candidates.append({
             "text": node.text,
             "file": node.metadata.get("file_name", "未知文档"),
             "score": round(node.score, 4) if node.score else None,
         })
-    return results
+
+    # 阶段 2：rerank 精排
+    if use_rerank:
+        return _rerank_with_dashscope(query, candidates, top_n=top_k)
+    return candidates[:top_k]
 
 
 # ====== QA 链单例（避免每次请求重复创建） ======
