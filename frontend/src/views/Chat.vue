@@ -564,6 +564,8 @@ async function sendMessage() {
 }
 
 watch(assistantId, () => { scrollToBottom(); loadDocFiles(); loadQuota() })
+// 助手列表异步加载完成后，isDocsAssistant 才会变为 true，此时再拉文档列表
+watch(isDocsAssistant, (val) => { if (val) loadDocFiles() })
 onMounted(() => { scrollToBottom(); loadDocFiles(); loadQuota() })
 </script>
 
