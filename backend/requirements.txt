@@ -18,8 +18,10 @@ llama-index-llms-dashscope>=0.1.0
 llama-index-embeddings-dashscope>=0.1.0
 llama-index-readers-file>=0.1.0
 # Milvus Lite 向量存储（嵌入式模式，本地 .db 文件，无需独立服务）
+# 注意：必须用 [milvus_lite] extras，否则只装客户端、跑不了本地 .db 模式
+# 平台限制：milvus-lite 仅支持 Linux / macOS（含 Apple Silicon），不支持 Windows
 llama-index-vector-stores-milvus>=0.1.20
-pymilvus>=2.4.2
+pymilvus[milvus_lite]>=2.4.2
 
 # 文档助手 —— LangChain 编排层
 langchain>=0.2.0
