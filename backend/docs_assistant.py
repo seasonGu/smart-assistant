@@ -191,14 +191,13 @@ def _get_milvus_vector_store(overwrite: bool = False):
         dim=MILVUS_DIM,
         overwrite=overwrite,
         similarity_metric="COSINE",
-        # HNSW 索引：中小规模 RAG 的经典选择，召回率高、查询快
-        # M=16 控制图的度数、efConstruction=200 控制建图时的搜索宽度
+        # Milvus Lite 仅支持 FLAT / IVF_FLAT / AUTOINDEX
+        # Milvus Standalone/Cloud 支持 HNSW 等更多索引类型
+        # 使用 AUTOINDEX 让 Milvus 根据运行模式自动选择最优索引
         index_config={
-            "index_type": "HNSW",
+            "index_type": "AUTOINDEX",
             "metric_type": "COSINE",
-            "params": {"M": 16, "efConstruction": 200},
         },
-        search_config={"ef": 64},
     )
 
 

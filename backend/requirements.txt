@@ -2,8 +2,8 @@ fastapi>=0.115.0,<1.0
 uvicorn[standard]>=0.30.0
 pydantic>=2.8.0
 python-multipart>=0.0.9
-# milvus-lite 依赖 pkg_resources，必须显式保留 setuptools
-setuptools>=70.0.0
+# milvus-lite 依赖 pkg_resources，setuptools>=71 移除了它，必须锁定旧版
+setuptools>=65.0.0,<71
 
 qwen-agent>=0.0.7
 dashscope>=1.14.0
