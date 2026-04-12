@@ -25,8 +25,8 @@ MILVUS_URI = os.getenv(
 )
 # Collection 名字里带版本后缀，换 embedding 模型或分块策略时换个名字即可重建
 # v2: TEXT_EMBEDDING_V3(1024d) + SentenceSplitter(512/80) + gte-rerank
-MILVUS_COLLECTION = os.getenv('MILVUS_COLLECTION', 'smart_assistant_docs_v2')
-MILVUS_DIM = 1024  # TEXT_EMBEDDING_V3 向量维度
+MILVUS_COLLECTION = os.getenv('MILVUS_COLLECTION', 'smart_assistant_docs_v3')
+MILVUS_DIM = 1536  # TEXT_EMBEDDING_V2 向量维度（V3 是 1024）
 
 # ====== RapidOCR 单例（懒加载） ======
 _ocr_engine = None
@@ -170,9 +170,11 @@ def _setup_llamaindex():
         temperature=0.1,
         top_p=0.8,
     )
-    # 使用 V3 embedding（中文长文本效果显著优于 V2）
+    # TEXT_EMBEDDING_V2: 1536 维，兼容性好，llama-index-embeddings-dashscope 稳定支持
+    # TEXT_EMBEDDING_V3: 1024 维，中文效果更好，但需要较新版本的 SDK
+    # 当前使用 V2 保证稳定，后续升级 SDK 后可切回 V3
     Settings.embed_model = DashScopeEmbedding(
-        model_name=DashScopeTextEmbeddingModels.TEXT_EMBEDDING_V3,
+        model_name=DashScopeTextEmbeddingModels.TEXT_EMBEDDING_V2,
     )
     # 显式控制分块：512 token 一块，相邻块 80 token 重叠，避免答案被切断
     Settings.node_parser = SentenceSplitter(
